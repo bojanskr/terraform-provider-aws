@@ -12,39 +12,19 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/logging"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
-	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
-	"github.com/hashicorp/terraform-provider-aws/internal/types"
+	"github.com/hashicorp/terraform-provider-aws/internal/types/option"
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
-
-// GetTag fetches an individual route53domains service tag for a resource.
-// Returns whether the key value and any errors. A NotFoundError is used to signal that no value was found.
-// This function will optimise the handling over listTags, if possible.
-// The identifier is typically the Amazon Resource Name (ARN), although
-// it may also be a different identifier depending on the service.
-func GetTag(ctx context.Context, conn *route53domains.Client, identifier, key string) (*string, error) {
-	listTags, err := listTags(ctx, conn, identifier)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if !listTags.KeyExists(key) {
-		return nil, tfresource.NewEmptyResultError(nil)
-	}
-
-	return listTags.KeyValue(key), nil
-}
 
 // listTags lists route53domains service tags.
 // The identifier is typically the Amazon Resource Name (ARN), although
 // it may also be a different identifier depending on the service.
-func listTags(ctx context.Context, conn *route53domains.Client, identifier string) (tftags.KeyValueTags, error) {
-	input := &route53domains.ListTagsForDomainInput{
+func listTags(ctx context.Context, conn *route53domains.Client, identifier string, optFns ...func(*route53domains.Options)) (tftags.KeyValueTags, error) {
+	input := route53domains.ListTagsForDomainInput{
 		DomainName: aws.String(identifier),
 	}
 
-	output, err := conn.ListTagsForDomain(ctx, input)
+	output, err := conn.ListTagsForDomain(ctx, &input, optFns...)
 
 	if err != nil {
 		return tftags.New(ctx, nil), err
@@ -63,7 +43,7 @@ func (p *servicePackage) ListTags(ctx context.Context, meta any, identifier stri
 	}
 
 	if inContext, ok := tftags.FromContext(ctx); ok {
-		inContext.TagsOut = types.Some(tags)
+		inContext.TagsOut = option.Some(tags)
 	}
 
 	return nil
@@ -113,14 +93,23 @@ func getTagsIn(ctx context.Context) []awstypes.Tag {
 // setTagsOut sets route53domains service tags in Context.
 func setTagsOut(ctx context.Context, tags []awstypes.Tag) {
 	if inContext, ok := tftags.FromContext(ctx); ok {
-		inContext.TagsOut = types.Some(KeyValueTags(ctx, tags))
+		inContext.TagsOut = option.Some(KeyValueTags(ctx, tags))
 	}
+}
+
+// createTags creates route53domains service tags for new resources.
+func createTags(ctx context.Context, conn *route53domains.Client, identifier string, tags []awstypes.Tag, optFns ...func(*route53domains.Options)) error {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	return updateTags(ctx, conn, identifier, nil, KeyValueTags(ctx, tags), optFns...)
 }
 
 // updateTags updates route53domains service tags.
 // The identifier is typically the Amazon Resource Name (ARN), although
 // it may also be a different identifier depending on the service.
-func updateTags(ctx context.Context, conn *route53domains.Client, identifier string, oldTagsMap, newTagsMap any) error {
+func updateTags(ctx context.Context, conn *route53domains.Client, identifier string, oldTagsMap, newTagsMap any, optFns ...func(*route53domains.Options)) error {
 	oldTags := tftags.New(ctx, oldTagsMap)
 	newTags := tftags.New(ctx, newTagsMap)
 
@@ -129,12 +118,12 @@ func updateTags(ctx context.Context, conn *route53domains.Client, identifier str
 	removedTags := oldTags.Removed(newTags)
 	removedTags = removedTags.IgnoreSystem(names.Route53Domains)
 	if len(removedTags) > 0 {
-		input := &route53domains.DeleteTagsForDomainInput{
+		input := route53domains.DeleteTagsForDomainInput{
 			DomainName:   aws.String(identifier),
 			TagsToDelete: removedTags.Keys(),
 		}
 
-		_, err := conn.DeleteTagsForDomain(ctx, input)
+		_, err := conn.DeleteTagsForDomain(ctx, &input, optFns...)
 
 		if err != nil {
 			return fmt.Errorf("untagging resource (%s): %w", identifier, err)
@@ -144,12 +133,12 @@ func updateTags(ctx context.Context, conn *route53domains.Client, identifier str
 	updatedTags := oldTags.Updated(newTags)
 	updatedTags = updatedTags.IgnoreSystem(names.Route53Domains)
 	if len(updatedTags) > 0 {
-		input := &route53domains.UpdateTagsForDomainInput{
+		input := route53domains.UpdateTagsForDomainInput{
 			DomainName:   aws.String(identifier),
 			TagsToUpdate: Tags(updatedTags),
 		}
 
-		_, err := conn.UpdateTagsForDomain(ctx, input)
+		_, err := conn.UpdateTagsForDomain(ctx, &input, optFns...)
 
 		if err != nil {
 			return fmt.Errorf("tagging resource (%s): %w", identifier, err)

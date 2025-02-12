@@ -23,6 +23,8 @@ For capturing events from services like IAM, `include_global_service_events` mus
 
 ```terraform
 resource "aws_cloudtrail" "example" {
+  depends_on = [aws_s3_bucket_policy.example]
+
   name                          = "example"
   s3_bucket_name                = aws_s3_bucket.example.id
   s3_key_prefix                 = "prefix"
@@ -77,6 +79,7 @@ data "aws_iam_policy_document" "example" {
     }
   }
 }
+
 resource "aws_s3_bucket_policy" "example" {
   bucket = aws_s3_bucket.example.id
   policy = data.aws_iam_policy_document.example.json
@@ -330,7 +333,7 @@ The following arguments are optional:
 * `is_organization_trail` - (Optional) Whether the trail is an AWS Organizations trail. Organization trails log events for the master account and all member accounts. Can only be created in the organization master account. Defaults to `false`.
 * `kms_key_id` - (Optional) KMS key ARN to use to encrypt the logs delivered by CloudTrail.
 * `s3_key_prefix` - (Optional) S3 key prefix that follows the name of the bucket you have designated for log file delivery.
-* `sns_topic_name` - (Optional) Name of the Amazon SNS topic defined for notification of log file delivery.
+* `sns_topic_name` - (Optional) Name of the Amazon SNS topic defined for notification of log file delivery. Specify the SNS topic ARN if it resides in another region.
 * `tags` - (Optional) Map of tags to assign to the trail. If configured with a provider [`default_tags` configuration block](https://registry.terraform.io/providers/hashicorp/aws/latest/docs#default_tags-configuration-block) present, tags with matching keys will overwrite those defined at the provider-level.
 
 ### event_selector
@@ -370,22 +373,23 @@ This resource exports the following attributes in addition to the arguments abov
 
 * `arn` - ARN of the trail.
 * `home_region` - Region in which the trail was created.
-* `id` - Name of the trail.
+* `id` - ARN of the trail.
+* `sns_topic_arn` - ARN of the Amazon SNS topic that CloudTrail uses to send notifications when log files are delivered.
 * `tags_all` - Map of tags assigned to the resource, including those inherited from the provider [`default_tags` configuration block](https://registry.terraform.io/providers/hashicorp/aws/latest/docs#default_tags-configuration-block).
 
 ## Import
 
-In Terraform v1.5.0 and later, use an [`import` block](https://developer.hashicorp.com/terraform/language/import) to import Cloudtrails using the `name`. For example:
+In Terraform v1.5.0 and later, use an [`import` block](https://developer.hashicorp.com/terraform/language/import) to import Cloudtrail Trails using the `arn`. For example:
 
 ```terraform
 import {
   to = aws_cloudtrail.sample
-  id = "my-sample-trail"
+  id = "arn:aws:cloudtrail:us-east-1:123456789012:trail/my-sample-trail"
 }
 ```
 
-Using `terraform import`, import Cloudtrails using the `name`. For example:
+Using `terraform import`, import Cloudtrails using the `arn`. For example:
 
 ```console
-% terraform import aws_cloudtrail.sample my-sample-trail
+% terraform import aws_cloudtrail.sample arn:aws:cloudtrail:us-east-1:123456789012:trail/my-sample-trail
 ```

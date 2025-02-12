@@ -139,12 +139,13 @@ This resource supports the following arguments:
 * `description` - (Optional) Enter a description for the connection. Maximum of 512 characters.
 * `authorization_type` - (Required) Choose the type of authorization to use for the connection. One of `API_KEY`,`BASIC`,`OAUTH_CLIENT_CREDENTIALS`.
 * `auth_parameters` - (Required) Parameters used for authorization. A maximum of 1 are allowed. Documented below.
-* `invocation_http_parameters` - (Optional) Invocation Http Parameters are additional credentials used to sign each Invocation of the ApiDestination created from this Connection. If the ApiDestination Rule Target has additional HttpParameters, the values will be merged together, with the Connection Invocation Http Parameters taking precedence. Secret values are stored and managed by AWS Secrets Manager. A maximum of 1 are allowed. Documented below.
+* `invocation_connectivity_parameters` - (Optional) The parameters to use for invoking a private API. Documented below.
 
 `auth_parameters` support the following:
 
 * `api_key` - (Optional) Parameters used for API_KEY authorization. An API key to include in the header for each authentication request. A maximum of 1 are allowed. Conflicts with `basic` and `oauth`. Documented below.
 * `basic` - (Optional) Parameters used for BASIC authorization. A maximum of 1 are allowed. Conflicts with `api_key` and `oauth`. Documented below.
+* `invocation_http_parameters` - (Optional) Invocation Http Parameters are additional credentials used to sign each Invocation of the ApiDestination created from this Connection. If the ApiDestination Rule Target has additional HttpParameters, the values will be merged together, with the Connection Invocation Http Parameters taking precedence. Secret values are stored and managed by AWS Secrets Manager. A maximum of 1 are allowed. Documented below.
 * `oauth` - (Optional) Parameters used for OAUTH_CLIENT_CREDENTIALS authorization. A maximum of 1 are allowed. Conflicts with `basic` and `api_key`. Documented below.
 
 `api_key` support the following:
@@ -182,6 +183,14 @@ This resource supports the following arguments:
     * `key` - (Required) The key for the parameter.
     * `value` - (Required) The value associated with the key. Created and stored in AWS Secrets Manager if is secret.
     * `is_value_secret` - (Optional) Specified whether the value is secret.
+
+`invocation_connectivity_parameters` supports the following:
+
+* `resource_parameters` - (Required) The parameters for EventBridge to use when invoking the resource endpoint. Documented below.
+
+`resource_parameters` supports the following:
+
+* `resource_configuration_arn` - (Required) ARN of the Amazon VPC Lattice [resource configuration](vpclattice_resource_configuration) for the resource endpoint.
 
 ## Attribute Reference
 

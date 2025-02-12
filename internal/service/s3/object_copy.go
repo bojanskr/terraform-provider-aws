@@ -10,16 +10,18 @@ import (
 	"log"
 	"net/url"
 	"strings"
-	"time"
 
-	"github.com/YakDriver/regexache"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hashicorp/aws-sdk-go-base/v2/endpoints"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/create"
+	"github.com/hashicorp/terraform-provider-aws/internal/enum"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/flex"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
@@ -28,24 +30,36 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/names"
 )
 
-// @SDKResource("aws_s3_object_copy", name="Object")
-// @Tags
-func ResourceObjectCopy() *schema.Resource {
+// @SDKResource("aws_s3_object_copy", name="Object Copy")
+// @Tags(identifierAttribute="arn", resourceType="ObjectCopy")
+// @Testing(noImport=true)
+func resourceObjectCopy() *schema.Resource {
 	return &schema.Resource{
 		CreateWithoutTimeout: resourceObjectCopyCreate,
 		ReadWithoutTimeout:   resourceObjectCopyRead,
 		UpdateWithoutTimeout: resourceObjectCopyUpdate,
 		DeleteWithoutTimeout: resourceObjectCopyDelete,
 
+		CustomizeDiff: func(ctx context.Context, d *schema.ResourceDiff, meta interface{}) error {
+			if ignoreProviderDefaultTags(ctx, d) {
+				return d.SetNew(names.AttrTagsAll, d.Get(names.AttrTags))
+			}
+			return verify.SetTagsDiff(ctx, d, meta)
+		},
+
 		Schema: map[string]*schema.Schema{
 			"acl": {
-				Type:          schema.TypeString,
-				Optional:      true,
-				Computed:      true,
-				ValidateFunc:  validation.StringInSlice(s3.ObjectCannedACL_Values(), false),
-				ConflictsWith: []string{"grant"},
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateDiagFunc: enum.Validate[types.ObjectCannedACL](),
+				ConflictsWith:    []string{"grant"},
 			},
-			"bucket": {
+			names.AttrARN: {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			names.AttrBucket: {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
@@ -59,6 +73,27 @@ func ResourceObjectCopy() *schema.Resource {
 			"cache_control": {
 				Type:     schema.TypeString,
 				Optional: true,
+				Computed: true,
+			},
+			"checksum_algorithm": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateDiagFunc: enum.Validate[types.ChecksumAlgorithm](),
+			},
+			"checksum_crc32": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"checksum_crc32c": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"checksum_sha1": {
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"checksum_sha256": {
+				Type:     schema.TypeString,
 				Computed: true,
 			},
 			"content_disposition": {
@@ -76,7 +111,7 @@ func ResourceObjectCopy() *schema.Resource {
 				Optional: true,
 				Computed: true,
 			},
-			"content_type": {
+			names.AttrContentType: {
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
@@ -118,7 +153,7 @@ func ResourceObjectCopy() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
-			"expected_bucket_owner": {
+			names.AttrExpectedBucketOwner: {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
@@ -135,7 +170,7 @@ func ResourceObjectCopy() *schema.Resource {
 				Optional:     true,
 				ValidateFunc: validation.IsRFC3339Time,
 			},
-			"force_destroy": {
+			names.AttrForceDestroy: {
 				Type:     schema.TypeBool,
 				Optional: true,
 				Default:  false,
@@ -147,42 +182,41 @@ func ResourceObjectCopy() *schema.Resource {
 				ConflictsWith: []string{"acl"},
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"email": {
+						names.AttrEmail: {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
-						"id": {
+						names.AttrID: {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
-						"permissions": {
+						names.AttrPermissions: {
 							Type:     schema.TypeSet,
 							Required: true,
-							Set:      schema.HashString,
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
-								ValidateFunc: validation.StringInSlice([]string{
+								ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice(enum.Slice(
 									//write permission not valid here
-									s3.PermissionFullControl,
-									s3.PermissionRead,
-									s3.PermissionReadAcp,
-									s3.PermissionWriteAcp,
-								}, false),
+									types.PermissionFullControl,
+									types.PermissionRead,
+									types.PermissionReadAcp,
+									types.PermissionWriteAcp,
+								), false)),
 							},
 						},
-						"type": {
-							Type:         schema.TypeString,
-							Required:     true,
-							ValidateFunc: validation.StringInSlice(s3.Type_Values(), false),
+						names.AttrType: {
+							Type:             schema.TypeString,
+							Required:         true,
+							ValidateDiagFunc: enum.Validate[types.Type](),
 						},
-						"uri": {
+						names.AttrURI: {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
 					},
 				},
 			},
-			"key": {
+			names.AttrKey: {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
@@ -195,7 +229,7 @@ func ResourceObjectCopy() *schema.Resource {
 				ValidateFunc: verify.ValidARN,
 				Sensitive:    true,
 			},
-			"kms_key_id": {
+			names.AttrKMSKeyID: {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Computed:     true,
@@ -214,21 +248,21 @@ func ResourceObjectCopy() *schema.Resource {
 				Elem:         &schema.Schema{Type: schema.TypeString},
 			},
 			"metadata_directive": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				ValidateFunc: validation.StringInSlice(s3.MetadataDirective_Values(), false),
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateDiagFunc: enum.Validate[types.MetadataDirective](),
 			},
 			"object_lock_legal_hold_status": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				Computed:     true,
-				ValidateFunc: validation.StringInSlice(s3.ObjectLockLegalHoldStatus_Values(), false),
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateDiagFunc: enum.Validate[types.ObjectLockLegalHoldStatus](),
 			},
 			"object_lock_mode": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				Computed:     true,
-				ValidateFunc: validation.StringInSlice(s3.ObjectLockMode_Values(), false),
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateDiagFunc: enum.Validate[types.ObjectLockMode](),
 			},
 			"object_lock_retain_until_date": {
 				Type:         schema.TypeString,
@@ -236,22 +270,46 @@ func ResourceObjectCopy() *schema.Resource {
 				Computed:     true,
 				ValidateFunc: validation.IsRFC3339Time,
 			},
+			"override_provider": {
+				Type:     schema.TypeList,
+				Optional: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"default_tags": {
+							Type:     schema.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									names.AttrTags: {
+										Type:             schema.TypeMap,
+										Optional:         true,
+										Elem:             &schema.Schema{Type: schema.TypeString},
+										ValidateDiagFunc: verify.MapSizeBetween(0, 0),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			"request_charged": {
 				Type:     schema.TypeBool,
 				Computed: true,
 			},
 			"request_payer": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				ValidateFunc: validation.StringInSlice(s3.RequestPayer_Values(), false),
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateDiagFunc: enum.Validate[types.RequestPayer](),
 			},
 			"server_side_encryption": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				Computed:     true,
-				ValidateFunc: validation.StringInSlice(s3.ServerSideEncryption_Values(), false),
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateDiagFunc: enum.Validate[types.ServerSideEncryption](),
 			},
-			"source": {
+			names.AttrSource: {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
@@ -274,16 +332,16 @@ func ResourceObjectCopy() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
-			"storage_class": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				Computed:     true,
-				ValidateFunc: validation.StringInSlice(s3.ObjectStorageClass_Values(), false),
+			names.AttrStorageClass: {
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				ValidateDiagFunc: enum.Validate[types.ObjectStorageClass](),
 			},
 			"tagging_directive": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				ValidateFunc: validation.StringInSlice(s3.TaggingDirective_Values(), false),
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateDiagFunc: enum.Validate[types.TaggingDirective](),
 			},
 			names.AttrTags:    tftags.TagsSchema(),
 			names.AttrTagsAll: tftags.TagsSchemaComputed(),
@@ -297,8 +355,6 @@ func ResourceObjectCopy() *schema.Resource {
 				Computed: true,
 			},
 		},
-
-		CustomizeDiff: verify.SetTagsDiff,
 	}
 }
 
@@ -309,11 +365,21 @@ func resourceObjectCopyCreate(ctx context.Context, d *schema.ResourceData, meta 
 
 func resourceObjectCopyRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).S3Conn(ctx)
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
 
-	bucket := d.Get("bucket").(string)
-	key := d.Get("key").(string)
-	output, err := FindObjectByThreePartKey(ctx, conn, bucket, key, "")
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+
+	var optFns []func(*s3.Options)
+	// Via S3 access point: "Invalid configuration: region from ARN `us-east-1` does not match client region `aws-global` and UseArnRegion is `false`".
+	if arn.IsARN(bucket) && conn.Options().Region == endpoints.AwsGlobalRegionID {
+		optFns = append(optFns, func(o *s3.Options) { o.UseARNRegion = true })
+	}
+
+	key := sdkv1CompatibleCleanKey(d.Get(names.AttrKey).(string))
+	output, err := findObjectByBucketAndKey(ctx, conn, bucket, key, "", d.Get("checksum_algorithm").(string), optFns...)
 
 	if !d.IsNewResource() && tfresource.NotFound(err) {
 		log.Printf("[WARN] S3 Object (%s) not found, removing from state", d.Id())
@@ -325,69 +391,50 @@ func resourceObjectCopyRead(ctx context.Context, d *schema.ResourceData, meta in
 		return sdkdiag.AppendErrorf(diags, "reading S3 Object (%s): %s", d.Id(), err)
 	}
 
+	arn, err := newObjectARN(meta.(*conns.AWSClient).Partition(ctx), bucket, key)
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading S3 Object (%s): %s", d.Id(), err)
+	}
+	d.Set(names.AttrARN, arn.String())
+
 	d.Set("bucket_key_enabled", output.BucketKeyEnabled)
 	d.Set("cache_control", output.CacheControl)
+	d.Set("checksum_crc32", output.ChecksumCRC32)
+	d.Set("checksum_crc32c", output.ChecksumCRC32C)
+	d.Set("checksum_sha1", output.ChecksumSHA1)
+	d.Set("checksum_sha256", output.ChecksumSHA256)
 	d.Set("content_disposition", output.ContentDisposition)
 	d.Set("content_encoding", output.ContentEncoding)
 	d.Set("content_language", output.ContentLanguage)
-	d.Set("content_type", output.ContentType)
-	metadata := flex.PointersMapToStringList(output.Metadata)
-
-	// AWS Go SDK capitalizes metadata, this is a workaround. https://github.com/aws/aws-sdk-go/issues/445
-	for k, v := range metadata {
-		delete(metadata, k)
-		metadata[strings.ToLower(k)] = v
-	}
-
-	if err := d.Set("metadata", metadata); err != nil {
-		return sdkdiag.AppendErrorf(diags, "setting metadata: %s", err)
-	}
-	d.Set("version_id", output.VersionId)
-	d.Set("server_side_encryption", output.ServerSideEncryption)
-	d.Set("website_redirect", output.WebsiteRedirectLocation)
+	d.Set(names.AttrContentType, output.ContentType)
+	d.Set("customer_algorithm", output.SSECustomerAlgorithm)
+	d.Set("customer_key_md5", output.SSECustomerKeyMD5)
+	// See https://forums.aws.amazon.com/thread.jspa?threadID=44003
+	d.Set("etag", strings.Trim(aws.ToString(output.ETag), `"`))
+	d.Set("expiration", output.Expiration)
+	d.Set(names.AttrKMSKeyID, output.SSEKMSKeyId)
+	d.Set("last_modified", flattenObjectDate(output.LastModified))
+	d.Set("metadata", output.Metadata)
 	d.Set("object_lock_legal_hold_status", output.ObjectLockLegalHoldStatus)
 	d.Set("object_lock_mode", output.ObjectLockMode)
 	d.Set("object_lock_retain_until_date", flattenObjectDate(output.ObjectLockRetainUntilDate))
-
-	if err := resourceObjectSetKMS(ctx, d, meta, output.SSEKMSKeyId); err != nil {
-		return sdkdiag.AppendErrorf(diags, "object KMS: %s", err)
-	}
-
-	// See https://forums.aws.amazon.com/thread.jspa?threadID=44003
-	d.Set("etag", strings.Trim(aws.StringValue(output.ETag), `"`))
-
+	d.Set("server_side_encryption", output.ServerSideEncryption)
 	// The "STANDARD" (which is also the default) storage
 	// class when set would not be included in the results.
-	d.Set("storage_class", s3.ObjectStorageClassStandard)
-	if output.StorageClass != nil { // nosemgrep: ci.helper-schema-ResourceData-Set-extraneous-nil-check
-		d.Set("storage_class", output.StorageClass)
+	d.Set(names.AttrStorageClass, types.ObjectStorageClassStandard)
+	if output.StorageClass != "" {
+		d.Set(names.AttrStorageClass, output.StorageClass)
 	}
-
-	// Retry due to S3 eventual consistency
-	tagsRaw, err := tfresource.RetryWhenAWSErrCodeEquals(ctx, 2*time.Minute, func() (interface{}, error) {
-		return ObjectListTags(ctx, conn, bucket, key)
-	}, s3.ErrCodeNoSuchBucket)
-
-	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "listing tags for S3 Bucket (%s) Object (%s): %s", bucket, key, err)
-	}
-
-	tags, ok := tagsRaw.(tftags.KeyValueTags)
-
-	if !ok {
-		return sdkdiag.AppendErrorf(diags, "listing tags for S3 Bucket (%s) Object (%s): unable to convert tags", bucket, key)
-	}
-
-	setTagsOut(ctx, Tags(tags))
+	d.Set("version_id", output.VersionId)
+	d.Set("website_redirect", output.WebsiteRedirectLocation)
 
 	return diags
 }
 
 func resourceObjectCopyUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	var
-	// if any of these exist, let the API decide whether to copy
-	diags diag.Diagnostics
+	var diags diag.Diagnostics
 
+	// if any of these exist, let the API decide whether to copy
 	for _, key := range []string{
 		"copy_if_match",
 		"copy_if_modified_since",
@@ -401,23 +448,24 @@ func resourceObjectCopyUpdate(ctx context.Context, d *schema.ResourceData, meta 
 
 	args := []string{
 		"acl",
-		"bucket",
+		names.AttrBucket,
 		"bucket_key_enabled",
 		"cache_control",
+		"checksum_algorithm",
 		"content_disposition",
 		"content_encoding",
 		"content_language",
-		"content_type",
+		names.AttrContentType,
 		"customer_algorithm",
 		"customer_key",
 		"customer_key_md5",
-		"expected_bucket_owner",
+		names.AttrExpectedBucketOwner,
 		"expected_source_bucket_owner",
 		"expires",
 		"grant",
-		"key",
+		names.AttrKey,
 		"kms_encryption_context",
-		"kms_key_id",
+		names.AttrKMSKeyID,
 		"metadata",
 		"metadata_directive",
 		"object_lock_legal_hold_status",
@@ -425,14 +473,12 @@ func resourceObjectCopyUpdate(ctx context.Context, d *schema.ResourceData, meta 
 		"object_lock_retain_until_date",
 		"request_payer",
 		"server_side_encryption",
-		"source",
+		names.AttrSource,
 		"source_customer_algorithm",
 		"source_customer_key",
 		"source_customer_key_md5",
-		"storage_class",
+		names.AttrStorageClass,
 		"tagging_directive",
-		"tags",
-		"tags_all",
 		"website_redirect",
 	}
 	if d.HasChanges(args...) {
@@ -444,20 +490,26 @@ func resourceObjectCopyUpdate(ctx context.Context, d *schema.ResourceData, meta 
 
 func resourceObjectCopyDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).S3Conn(ctx)
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
 
-	bucket := d.Get("bucket").(string)
-	key := d.Get("key").(string)
-	// We are effectively ignoring all leading '/'s in the key name and
-	// treating multiple '/'s as a single '/' as aws.Config.DisableRestProtocolURICleaning is false
-	key = strings.TrimLeft(key, "/")
-	key = regexache.MustCompile(`/+`).ReplaceAllString(key, "/")
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+
+	var optFns []func(*s3.Options)
+	// Via S3 access point: "Invalid configuration: region from ARN `us-east-1` does not match client region `aws-global` and UseArnRegion is `false`".
+	if arn.IsARN(bucket) && conn.Options().Region == endpoints.AwsGlobalRegionID {
+		optFns = append(optFns, func(o *s3.Options) { o.UseARNRegion = true })
+	}
+
+	key := sdkv1CompatibleCleanKey(d.Get(names.AttrKey).(string))
 
 	var err error
 	if _, ok := d.GetOk("version_id"); ok {
-		_, err = DeleteAllObjectVersions(ctx, conn, bucket, key, d.Get("force_destroy").(bool), false)
+		_, err = deleteAllObjectVersions(ctx, conn, bucket, key, d.Get(names.AttrForceDestroy).(bool), false, optFns...)
 	} else {
-		err = deleteObjectVersion(ctx, conn, bucket, key, "", false)
+		err = deleteObjectVersion(ctx, conn, bucket, key, "", false, optFns...)
 	}
 
 	if err != nil {
@@ -468,18 +520,27 @@ func resourceObjectCopyDelete(ctx context.Context, d *schema.ResourceData, meta 
 
 func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	conn := meta.(*conns.AWSClient).S3Conn(ctx)
-	defaultTagsConfig := meta.(*conns.AWSClient).DefaultTagsConfig
-	tags := defaultTagsConfig.MergeTags(tftags.New(ctx, d.Get("tags").(map[string]interface{})))
+	conn := meta.(*conns.AWSClient).S3Client(ctx)
+
+	bucket := d.Get(names.AttrBucket).(string)
+	if isDirectoryBucket(bucket) {
+		conn = meta.(*conns.AWSClient).S3ExpressClient(ctx)
+	}
+
+	var optFns []func(*s3.Options)
+	// Via S3 access point: "Invalid configuration: region from ARN `us-east-1` does not match client region `aws-global` and UseArnRegion is `false`".
+	if arn.IsARN(bucket) && conn.Options().Region == endpoints.AwsGlobalRegionID {
+		optFns = append(optFns, func(o *s3.Options) { o.UseARNRegion = true })
+	}
 
 	input := &s3.CopyObjectInput{
-		Bucket:     aws.String(d.Get("bucket").(string)),
-		Key:        aws.String(d.Get("key").(string)),
-		CopySource: aws.String(url.QueryEscape(d.Get("source").(string))),
+		Bucket:     aws.String(bucket),
+		CopySource: aws.String(url.QueryEscape(d.Get(names.AttrSource).(string))),
+		Key:        aws.String(sdkv1CompatibleCleanKey(d.Get(names.AttrKey).(string))),
 	}
 
 	if v, ok := d.GetOk("acl"); ok {
-		input.ACL = aws.String(v.(string))
+		input.ACL = types.ObjectCannedACL(v.(string))
 	}
 
 	if v, ok := d.GetOk("bucket_key_enabled"); ok {
@@ -488,6 +549,10 @@ func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta 
 
 	if v, ok := d.GetOk("cache_control"); ok {
 		input.CacheControl = aws.String(v.(string))
+	}
+
+	if v, ok := d.GetOk("checksum_algorithm"); ok {
+		input.ChecksumAlgorithm = types.ChecksumAlgorithm(v.(string))
 	}
 
 	if v, ok := d.GetOk("content_disposition"); ok {
@@ -502,7 +567,7 @@ func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta 
 		input.ContentLanguage = aws.String(v.(string))
 	}
 
-	if v, ok := d.GetOk("content_type"); ok {
+	if v, ok := d.GetOk(names.AttrContentType); ok {
 		input.ContentType = aws.String(v.(string))
 	}
 
@@ -534,7 +599,7 @@ func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta 
 		input.SSECustomerKeyMD5 = aws.String(v.(string))
 	}
 
-	if v, ok := d.GetOk("expected_bucket_owner"); ok {
+	if v, ok := d.GetOk(names.AttrExpectedBucketOwner); ok {
 		input.ExpectedBucketOwner = aws.String(v.(string))
 	}
 
@@ -552,32 +617,32 @@ func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta 
 		input.GrantRead = grants.Read
 		input.GrantReadACP = grants.ReadACP
 		input.GrantWriteACP = grants.WriteACP
-		input.ACL = nil
+		input.ACL = ""
 	}
 
 	if v, ok := d.GetOk("kms_encryption_context"); ok {
 		input.SSEKMSEncryptionContext = aws.String(v.(string))
 	}
 
-	if v, ok := d.GetOk("kms_key_id"); ok {
+	if v, ok := d.GetOk(names.AttrKMSKeyID); ok {
 		input.SSEKMSKeyId = aws.String(v.(string))
-		input.ServerSideEncryption = aws.String(s3.ServerSideEncryptionAwsKms)
+		input.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 	}
 
 	if v, ok := d.GetOk("metadata"); ok {
-		input.Metadata = flex.ExpandStringMap(v.(map[string]interface{}))
+		input.Metadata = flex.ExpandStringValueMap(v.(map[string]interface{}))
 	}
 
 	if v, ok := d.GetOk("metadata_directive"); ok {
-		input.MetadataDirective = aws.String(v.(string))
+		input.MetadataDirective = types.MetadataDirective(v.(string))
 	}
 
 	if v, ok := d.GetOk("object_lock_legal_hold_status"); ok {
-		input.ObjectLockLegalHoldStatus = aws.String(v.(string))
+		input.ObjectLockLegalHoldStatus = types.ObjectLockLegalHoldStatus(v.(string))
 	}
 
 	if v, ok := d.GetOk("object_lock_mode"); ok {
-		input.ObjectLockMode = aws.String(v.(string))
+		input.ObjectLockMode = types.ObjectLockMode(v.(string))
 	}
 
 	if v, ok := d.GetOk("object_lock_retain_until_date"); ok {
@@ -585,11 +650,11 @@ func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta 
 	}
 
 	if v, ok := d.GetOk("request_payer"); ok {
-		input.RequestPayer = aws.String(v.(string))
+		input.RequestPayer = types.RequestPayer(v.(string))
 	}
 
 	if v, ok := d.GetOk("server_side_encryption"); ok {
-		input.ServerSideEncryption = aws.String(v.(string))
+		input.ServerSideEncryption = types.ServerSideEncryption(v.(string))
 	}
 
 	if v, ok := d.GetOk("source_customer_algorithm"); ok {
@@ -604,12 +669,20 @@ func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta 
 		input.CopySourceSSECustomerKeyMD5 = aws.String(v.(string))
 	}
 
-	if v, ok := d.GetOk("storage_class"); ok {
-		input.StorageClass = aws.String(v.(string))
+	if v, ok := d.GetOk(names.AttrStorageClass); ok {
+		input.StorageClass = types.StorageClass(v.(string))
 	}
 
 	if v, ok := d.GetOk("tagging_directive"); ok {
-		input.TaggingDirective = aws.String(v.(string))
+		input.TaggingDirective = types.TaggingDirective(v.(string))
+	}
+
+	defaultTagsConfig := meta.(*conns.AWSClient).DefaultTagsConfig(ctx)
+	tags := tftags.New(ctx, d.Get(names.AttrTags).(map[string]interface{}))
+	if ignoreProviderDefaultTags(ctx, d) {
+		tags = tags.RemoveDefaultConfig(defaultTagsConfig)
+	} else {
+		tags = defaultTagsConfig.MergeTags(tftags.New(ctx, tags))
 	}
 
 	if len(tags) > 0 {
@@ -621,30 +694,22 @@ func resourceObjectCopyDoCopy(ctx context.Context, d *schema.ResourceData, meta 
 		input.WebsiteRedirectLocation = aws.String(v.(string))
 	}
 
-	output, err := conn.CopyObjectWithContext(ctx, input)
+	output, err := conn.CopyObject(ctx, input, optFns...)
+
 	if err != nil {
-		return sdkdiag.AppendErrorf(diags, "copying S3 object (bucket: %s; key: %s; source: %s): %s", aws.StringValue(input.Bucket), aws.StringValue(input.Key), aws.StringValue(input.CopySource), err)
+		return sdkdiag.AppendErrorf(diags, "copying %s to S3 Bucket (%s) Object (%s): %s", aws.ToString(input.CopySource), aws.ToString(input.Bucket), aws.ToString(input.Key), err)
 	}
 
-	d.Set("customer_algorithm", output.SSECustomerAlgorithm)
-	d.Set("customer_key_md5", output.SSECustomerKeyMD5)
-
-	if output.CopyObjectResult != nil {
-		d.Set("etag", strings.Trim(aws.StringValue(output.CopyObjectResult.ETag), `"`))
-		d.Set("last_modified", flattenObjectDate(output.CopyObjectResult.LastModified))
+	if d.IsNewResource() {
+		d.SetId(d.Get(names.AttrKey).(string))
 	}
 
-	d.Set("expiration", output.Expiration)
+	// These attributes aren't returned from HeadObject.
 	d.Set("kms_encryption_context", output.SSEKMSEncryptionContext)
-	d.Set("kms_key_id", output.SSEKMSKeyId)
-	d.Set("request_charged", output.RequestCharged)
-	d.Set("server_side_encryption", output.ServerSideEncryption)
+	d.Set("request_charged", output.RequestCharged == types.RequestChargedRequester)
 	d.Set("source_version_id", output.CopySourceVersionId)
-	d.Set("version_id", output.VersionId)
 
-	d.SetId(d.Get("key").(string))
-
-	return append(diags, resourceObjectRead(ctx, d, meta)...)
+	return append(diags, resourceObjectCopyRead(ctx, d, meta)...)
 }
 
 type s3Grants struct {
@@ -659,22 +724,22 @@ func expandObjectCopyGrant(tfMap map[string]interface{}) string {
 		return ""
 	}
 
-	apiObject := &s3.Grantee{}
+	apiObject := &types.Grantee{}
 
-	if v, ok := tfMap["email"].(string); ok && v != "" {
-		apiObject.SetEmailAddress(v)
+	if v, ok := tfMap[names.AttrEmail].(string); ok && v != "" {
+		apiObject.EmailAddress = aws.String(v)
 	}
 
-	if v, ok := tfMap["id"].(string); ok && v != "" {
-		apiObject.SetID(v)
+	if v, ok := tfMap[names.AttrID].(string); ok && v != "" {
+		apiObject.ID = aws.String(v)
 	}
 
-	if v, ok := tfMap["type"].(string); ok && v != "" {
-		apiObject.SetType(v)
+	if v, ok := tfMap[names.AttrType].(string); ok && v != "" {
+		apiObject.Type = types.Type(v)
 	}
 
-	if v, ok := tfMap["uri"].(string); ok && v != "" {
-		apiObject.SetURI(v)
+	if v, ok := tfMap[names.AttrURI].(string); ok && v != "" {
+		apiObject.URI = aws.String(v)
 	}
 
 	// Examples:
@@ -683,14 +748,14 @@ func expandObjectCopyGrant(tfMap map[string]interface{}) string {
 	//"GrantFullControl": "id=examplee7a2f25102679df27bb0ae12b3f85be6f290b936c4393484",
 	//"GrantWrite": "uri=http://acs.amazonaws.com/groups/s3/LogDelivery"
 
-	switch *apiObject.Type {
-	case s3.TypeAmazonCustomerByEmail:
-		return fmt.Sprintf("emailaddress=%s", *apiObject.EmailAddress)
-	case s3.TypeCanonicalUser:
-		return fmt.Sprintf("id=%s", *apiObject.ID)
+	switch apiObject.Type {
+	case types.TypeAmazonCustomerByEmail:
+		return fmt.Sprintf("emailaddress=%s", aws.ToString(apiObject.EmailAddress))
+	case types.TypeCanonicalUser:
+		return fmt.Sprintf("id=%s", aws.ToString(apiObject.ID))
 	}
 
-	return fmt.Sprintf("uri=%s", *apiObject.URI)
+	return fmt.Sprintf("uri=%s", aws.ToString(apiObject.URI))
 }
 
 func expandObjectCopyGrants(tfList []interface{}) *s3Grants {
@@ -710,16 +775,16 @@ func expandObjectCopyGrants(tfList []interface{}) *s3Grants {
 			continue
 		}
 
-		for _, perm := range tfMap["permissions"].(*schema.Set).List() {
+		for _, perm := range tfMap[names.AttrPermissions].(*schema.Set).List() {
 			if v := expandObjectCopyGrant(tfMap); v != "" {
-				switch perm.(string) {
-				case s3.PermissionFullControl:
+				switch types.Permission(perm.(string)) {
+				case types.PermissionFullControl:
 					grantFullControl = append(grantFullControl, v)
-				case s3.PermissionRead:
+				case types.PermissionRead:
 					grantRead = append(grantRead, v)
-				case s3.PermissionReadAcp:
+				case types.PermissionReadAcp:
 					grantReadACP = append(grantReadACP, v)
-				case s3.PermissionWriteAcp:
+				case types.PermissionWriteAcp:
 					grantWriteACP = append(grantWriteACP, v)
 				}
 			}
@@ -755,16 +820,16 @@ func grantHash(v interface{}) int {
 		return 0
 	}
 
-	if v, ok := m["id"]; ok {
+	if v, ok := m[names.AttrID]; ok {
 		buf.WriteString(fmt.Sprintf("%s-", v.(string)))
 	}
-	if v, ok := m["type"]; ok {
+	if v, ok := m[names.AttrType]; ok {
 		buf.WriteString(fmt.Sprintf("%s-", v.(string)))
 	}
-	if v, ok := m["uri"]; ok {
+	if v, ok := m[names.AttrURI]; ok {
 		buf.WriteString(fmt.Sprintf("%s-", v.(string)))
 	}
-	if p, ok := m["permissions"]; ok {
+	if p, ok := m[names.AttrPermissions]; ok {
 		buf.WriteString(fmt.Sprintf("%v-", p.(*schema.Set).List()))
 	}
 	return create.StringHashcode(buf.String())

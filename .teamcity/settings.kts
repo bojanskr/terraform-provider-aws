@@ -11,7 +11,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-version = "2023.05"
+version = "2024.03"
 
 val defaultRegion = DslContext.getParameter("default_region")
 val alternateRegion = DslContext.getParameter("alternate_region", "")
@@ -20,16 +20,11 @@ val sweeperRegions = DslContext.getParameter("sweeper_regions")
 val awsAccountID = DslContext.getParameter("aws_account.account_id")
 val acctestParallelism = DslContext.getParameter("acctest_parallelism", "")
 val tfAccAssumeRoleArn = DslContext.getParameter("tf_acc_assume_role_arn", "")
-val awsAlternateAccountID = DslContext.getParameter("aws_alt_account.account_id", "")
 val tfLog = DslContext.getParameter("tf_log", "")
 
 // Legacy User credentials
 val legacyAWSAccessKeyID = DslContext.getParameter("aws_account.legacy_access_key_id", "")
 val legacyAWSSecretAccessKey = DslContext.getParameter("aws_account.legacy_secret_access_key", "")
-
-// Legacy Alternate User credentials
-val legacyAWSAlternateAccessKeyID = DslContext.getParameter("aws_alt_account.legacy_access_key_id", "")
-val legacyAWSAlternateSecretAccessKey = DslContext.getParameter("aws_alt_account.legacy_secret_access_key", "")
 
 // Assume Role credentials
 val accTestRoleARN = DslContext.getParameter("aws_account.role_arn", "")
@@ -54,11 +49,15 @@ project {
         buildType(Sweeper)
     }
 
+    buildType(Sanity)
+    buildType(Performance)
+
     params {
         if (acctestParallelism != "") {
             text("ACCTEST_PARALLELISM", acctestParallelism, allowEmpty = false)
         }
         text("TEST_PATTERN", "TestAcc", display = ParameterDisplay.HIDDEN)
+        text("TEST_EXCLUDE_PATTERN", "", display = ParameterDisplay.HIDDEN)
         text("SWEEPER_REGIONS", sweeperRegions, display = ParameterDisplay.HIDDEN, allowEmpty = false)
         text("env.AWS_ACCOUNT_ID", awsAccountID, display = ParameterDisplay.HIDDEN, allowEmpty = false)
         text("env.AWS_DEFAULT_REGION", defaultRegion, allowEmpty = false)
@@ -70,6 +69,8 @@ project {
 
         if (acmCertificateRootDomain != "") {
             text("env.ACM_CERTIFICATE_ROOT_DOMAIN", acmCertificateRootDomain, display = ParameterDisplay.HIDDEN)
+            text("env.AMPLIFY_DOMAIN_NAME", acmCertificateRootDomain, display = ParameterDisplay.HIDDEN)
+            text("env.SES_DOMAIN_IDENTITY_ROOT_DOMAIN", acmCertificateRootDomain, display = ParameterDisplay.HIDDEN)
         }
 
         val securityGroupRulesPerGroup = DslContext.getParameter("security_group_rules_per_group", "")
@@ -77,11 +78,13 @@ project {
             text("env.EC2_SECURITY_GROUP_RULES_PER_GROUP_LIMIT", securityGroupRulesPerGroup)
         }
 
-        val brancRef = DslContext.getParameter("branch_name", "")
-        if (brancRef != "") {
-            text("BRANCH_NAME", brancRef, display = ParameterDisplay.HIDDEN)
+        // Used to specify the default branch in the VCS Root
+        val branchRef = DslContext.getParameter("branch_name", "")
+        if (branchRef != "") {
+            text("BRANCH_NAME", branchRef, display = ParameterDisplay.HIDDEN)
         }
 
+        // Additional role to assume for some acceptance tests
         if (tfAccAssumeRoleArn != "") {
             text("env.TF_ACC_ASSUME_ROLE_ARN", tfAccAssumeRoleArn)
         }
@@ -92,13 +95,6 @@ project {
         }
         if (legacyAWSSecretAccessKey != "") {
             password("env.AWS_SECRET_ACCESS_KEY", legacyAWSSecretAccessKey, display = ParameterDisplay.HIDDEN)
-        }
-
-        // Legacy Alternate User credentials
-        if (awsAlternateAccountID != "" || legacyAWSAlternateAccessKeyID != "" || legacyAWSAlternateSecretAccessKey != "") {
-            text("env.AWS_ALTERNATE_ACCOUNT_ID", awsAlternateAccountID, display = ParameterDisplay.HIDDEN)
-            password("env.AWS_ALTERNATE_ACCESS_KEY_ID", legacyAWSAlternateAccessKeyID, display = ParameterDisplay.HIDDEN)
-            password("env.AWS_ALTERNATE_SECRET_ACCESS_KEY", legacyAWSAlternateSecretAccessKey, display = ParameterDisplay.HIDDEN)
         }
 
         // Assume Role credentials
@@ -113,16 +109,6 @@ project {
 
         // Define this parameter even when not set to allow individual builds to set the value
         text("env.TF_ACC_TERRAFORM_VERSION", DslContext.getParameter("terraform_version", ""))
-
-        // These overrides exist because of the inherited dependency in the existing project structure and can
-        // be removed when this is moved outside of it
-        val isOnPrem = DslContext.getParameter("is_on_prem", "true").equals("true", ignoreCase = true)
-        if (isOnPrem) {
-            // These should be overridden in the base AWS project
-            param("env.GOPATH", "")
-            param("env.GO111MODULE", "") // No longer needed as of Go 1.16
-            param("env.GO_VERSION", "") // We're using `goenv` and `.go-version`
-        }
     }
 
     subProject(Services)
@@ -322,6 +308,17 @@ object SetUp : BuildType({
         }
     }
 
+    // For sweeper step
+    failureConditions {
+        failOnText {
+            conditionType = BuildFailureOnText.ConditionType.REGEXP
+            pattern = """Sweeper Tests for region \(([-a-z0-9]+)\) ran unsuccessfully"""
+            failureMessage = """Sweeper failure for region "${'$'}1""""
+            reverse = false
+            reportOnlyFirstMatch = false
+        }
+    }
+
     features {
         golang {
             testFormat = "json"
@@ -442,7 +439,7 @@ object Sweeper : BuildType({
                     branchFilter = "+:refs/heads/main"
                     triggerBuild = always()
                     withPendingChangesOnly = false
-                    enableQueueOptimization = false
+                    enableQueueOptimization = true
                     enforceCleanCheckoutForDependencies = true
                 }
             }
@@ -489,6 +486,183 @@ object Sweeper : BuildType({
                 buildFinishedSuccessfully = true
                 firstBuildErrorOccurs = true
             }
+        }
+    }
+})
+
+object Sanity : BuildType({
+    name = "Sanity"
+
+    vcs {
+        root(AbsoluteId(DslContext.getParameter("vcs_root_id")))
+
+        cleanCheckout = true
+    }
+
+    steps {
+        ConfigureGoEnv()
+        script {
+            name = "IAM"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "Logs"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "EC2"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "ECS"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "ELBv2"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "KMS"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "IAM"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "Lambda"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "Meta"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "Route53"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "S3"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "Secrets Manager"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }
+        script {
+            name = "STS"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }  
+        script {
+            name = "Report Success"
+            scriptContent = File("./scripts/sanity.sh").readText()
+        }    
+    }
+
+    val triggerTimeRaw = DslContext.getParameter("sanity_trigger_time", "")
+    if (triggerTimeRaw != "") {
+        val formatter = DateTimeFormatter.ofPattern("HH':'mm' 'VV")
+        val triggerTime = formatter.parse(triggerTimeRaw)
+        val enableTestTriggersGlobally = DslContext.getParameter("enable_test_triggers_globally", "true").equals("true", ignoreCase = true)
+        if (enableTestTriggersGlobally) {
+            triggers {
+                schedule {
+                    schedulingPolicy = daily {
+                        val triggerHM = LocalTime.from(triggerTime)
+                        hour = triggerHM.getHour()
+                        minute = triggerHM.getMinute()
+                        timezone = ZoneId.from(triggerTime).toString()
+                    }
+                    branchFilter = "+:refs/heads/main"
+                    triggerBuild = always()
+                    withPendingChangesOnly = false
+                    enableQueueOptimization = true
+                    enforceCleanCheckoutForDependencies = true
+                }
+            }
+        }
+    }
+
+    features {
+        feature {
+            type = "JetBrains.SharedResources"
+            param("locks-param", "${DslContext.getParameter("aws_account.lock_id")} writeLock")
+        }
+        feature {
+            type = "JetBrains.SharedResources"
+            param("locks-param", "${DslContext.getParameter("aws_account.vpc_lock_id")} readLock")
+        }
+    }
+})
+
+object Performance : BuildType({
+    name = "Performance"
+
+    vcs {
+        root(AbsoluteId(DslContext.getParameter("vcs_root_id")))
+
+        cleanCheckout = true
+    }
+
+    steps {
+        script {
+            name = "Configure Go"
+            scriptContent = File("./scripts/configure_goenv.sh").readText()
+        }
+        script {
+            name = "VPC Main"
+            scriptContent = File("./scripts/performance.sh").readText()
+        }
+        script {
+            name = "SSM Main"
+            scriptContent = File("./scripts/performance.sh").readText()
+        }
+        script {
+            name = "VPC Latest Version"
+            scriptContent = File("./scripts/performance.sh").readText()
+        }
+        script {
+            name = "SSM Latest Version"
+            scriptContent = File("./scripts/performance.sh").readText()
+        }
+        script {
+            name = "Analysis"
+            scriptContent = File("./scripts/performance.sh").readText()
+        }
+    }
+
+    val triggerTimeRaw = DslContext.getParameter("performance_trigger_time", "")
+    if (triggerTimeRaw != "") {
+        val formatter = DateTimeFormatter.ofPattern("HH':'mm' 'VV")
+        val triggerTime = formatter.parse(triggerTimeRaw)
+        val enableTestTriggersGlobally = DslContext.getParameter("enable_test_triggers_globally", "true").equals("true", ignoreCase = true)
+        if (enableTestTriggersGlobally) {
+            triggers {
+                schedule {
+                    schedulingPolicy = daily {
+                        val triggerHM = LocalTime.from(triggerTime)
+                        hour = triggerHM.getHour()
+                        minute = triggerHM.getMinute()
+                        timezone = ZoneId.from(triggerTime).toString()
+                    }
+                    branchFilter = "+:refs/heads/main"
+                    triggerBuild = always()
+                    withPendingChangesOnly = false
+                    enableQueueOptimization = true
+                    enforceCleanCheckoutForDependencies = true
+                }
+            }
+        }
+    }
+
+    features {
+        feature {
+            type = "JetBrains.SharedResources"
+            param("locks-param", "${DslContext.getParameter("aws_account.lock_id")} writeLock")
+        }
+        feature {
+            type = "JetBrains.SharedResources"
+            param("locks-param", "${DslContext.getParameter("aws_account.vpc_lock_id")} readLock")
         }
     }
 })
